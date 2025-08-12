@@ -325,6 +325,8 @@ def main(_deps=None, **deps):
 
                 action, _ = action_generator(obs)
                 action = [float(x) for x in action]
+
+                z_pin = 0.63
                 # print(action)
                 # print()
                 proxy.update @ MuJoCo(
@@ -332,6 +334,8 @@ def main(_deps=None, **deps):
                     src=args.src,
                     assets=args.asset_paths,
                     qpos=[tx, ty, 0, action[0], action[1] - 0.19], # subtract to offset for starting state
+                    # TODO: tx and ty are not accurate if the T is feeling force on the front end. How to reconcile?
+                    mocap_pos=[action[0], action[1], z_pin],
                     # qpos=[0] * 8
                 )
                 print(action[:2])
