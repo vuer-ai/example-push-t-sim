@@ -1,0 +1,188 @@
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from .util import GaussianFourierProjection, Dense
+
+
+class ScoreNetActionSeq1D(nn.Module):
+    """
+    1‑D variant of the FiLM‑conditioned U‑Net used in Diffusion Policy.
+
+    * Input  : (B, 1, H, W)  –  we squeeze dim‑1 → (B, H, W)
+    * Channel: H rows become the input channels for Conv1d
+    * Length : W is the sequence length Conv1d slides over
+    """
+
+    # ------------------------------------------------------------------ #
+    def __init__(
+        self,
+        marginal_prob_std,
+        row_channels: int=10,                 # H after any padding (e.g. 16)
+        channels=(64, 128, 256, 256),
+        embed_dim=256,
+        vis_dim: int = 0,
+        obs_dim: int = 0,
+        image_keys: list[str] | None = None,
+        share_vision_film: bool = False,
+        vision_cond: bool = True,
+        film_dropout: float = 0.10,
+        **deps,
+    ):
+        super().__init__()
+        image_keys = image_keys or []
+        self.marginal_prob_std = marginal_prob_std
+        self.row_channels = row_channels      # saves a squeeze check later
+
+        # ---- timestep embedding --------------------------------------- #
+        self.embed = nn.Sequential(
+            GaussianFourierProjection(embed_dim=embed_dim),
+            nn.Linear(embed_dim, embed_dim),
+        )
+
+        # ---- helper to build zero‑init γ/β heads (+Dropout) ------------ #
+        def _film_head(in_dim, out_dim):
+            seq = nn.Sequential(
+                nn.Linear(in_dim, out_dim),
+                nn.Dropout(film_dropout) if film_dropout > 0 else nn.Identity(),
+            )
+            nn.init.zeros_(seq[0].weight)
+            nn.init.zeros_(seq[0].bias)
+            return seq
+
+        # ---- FiLM heads (vision & proprio) ---------------------------- #
+        self.num_views = len(image_keys)
+        self.vision_cond = vision_cond
+        self.share_vision_film = share_vision_film
+
+        # Vision heads
+        if vision_cond and vis_dim > 0 and self.num_views > 0:
+            if not share_vision_film:
+                self.film_gamma_vis = nn.ModuleList([
+                    nn.ModuleList([_film_head(vis_dim, c) for _ in range(self.num_views)])
+                    for c in channels
+                ])
+                self.film_beta_vis = nn.ModuleList([
+                    nn.ModuleList([_film_head(vis_dim, c) for _ in range(self.num_views)])
+                    for c in channels
+                ])
+            else:
+                self.film_gamma_vis = nn.ModuleList([_film_head(vis_dim, c) for c in channels])
+                self.film_beta_vis  = nn.ModuleList([_film_head(vis_dim, c) for c in channels])
+        else:
+            self.film_gamma_vis = self.film_beta_vis = None
+
+        # Proprio heads
+        if obs_dim > 0:
+            self.film_gamma_prop = nn.ModuleList([_film_head(obs_dim, c) for c in channels])
+            self.film_beta_prop  = nn.ModuleList([_film_head(obs_dim, c) for c in channels])
+        else:
+            self.film_gamma_prop = self.film_beta_prop = None
+
+        # ---- 1‑D U‑Net trunk ------------------------------------------ #
+        C1, C2, C3, C4 = channels
+
+        # Encoder
+        self.conv1 = nn.Conv1d(row_channels, C1, 3, padding=1, bias=False)
+        self.dense1 = Dense(embed_dim, C1)
+        self.gn1 = nn.GroupNorm(4, C1)
+
+        self.conv2 = nn.Conv1d(C1, C2, 3, stride=2, padding=1, bias=False)
+        self.dense2 = Dense(embed_dim, C2)
+        self.gn2 = nn.GroupNorm(32, C2)
+
+        self.conv3 = nn.Conv1d(C2, C3, 3, stride=2, padding=1, bias=False)
+        self.dense3 = Dense(embed_dim, C3)
+        self.gn3 = nn.GroupNorm(32, C3)
+
+        self.conv4 = nn.Conv1d(C3, C4, 3, stride=2, padding=1, bias=False)
+        self.dense4 = Dense(embed_dim, C4)
+        self.gn4 = nn.GroupNorm(32, C4)
+
+        # Decoder (transpose‑conv1d)
+        self.tconv4 = nn.ConvTranspose1d(C4, C3, 3, stride=2, padding=1, output_padding=1, bias=False)
+        self.dense5 = Dense(embed_dim, C3)
+        self.tgn4 = nn.GroupNorm(32, C3)
+
+        self.tconv3 = nn.ConvTranspose1d(C3 + C3, C2, 3, stride=2, padding=1, output_padding=1, bias=False)
+        self.dense6 = Dense(embed_dim, C2)
+        self.tgn3 = nn.GroupNorm(32, C2)
+
+        self.tconv2 = nn.ConvTranspose1d(C2 + C2, C1, 3, stride=2, padding=1, output_padding=1, bias=False)
+        self.dense7 = Dense(embed_dim, C1)
+        self.tgn2 = nn.GroupNorm(32, C1)
+
+        self.tconv1 = nn.ConvTranspose1d(C1 + C1, row_channels, 3, padding=1)
+        self.act = lambda x: x * torch.sigmoid(x)  # Swish
+        
+        self.input_channels = 1
+
+    def _apply_film(self, h, idx, Ot_list, p_obs):
+        if (self.film_gamma_vis is None) and (self.film_gamma_prop is None):
+            return h  # no FiLM at all
+
+        z = lambda: h.new_zeros(1)  # device + dtype helper
+        gamma_v = beta_v = gamma_p = beta_p = z()
+
+        # --- vision branch ---------------------------------------------------
+        if self.film_gamma_vis is not None:
+            if self.share_vision_film:
+                g_list = [self.film_gamma_vis[idx](O).unsqueeze(-1) for O in Ot_list]
+                b_list = [self.film_beta_vis[idx](O).unsqueeze(-1) for O in Ot_list]
+            else:
+                g_list = [self.film_gamma_vis[idx][v](O).unsqueeze(-1) for v, O in enumerate(Ot_list)]
+                b_list = [self.film_beta_vis[idx][v](O).unsqueeze(-1) for v, O in enumerate(Ot_list)]
+            gamma_v = torch.stack(g_list, 0).mean(0)
+            beta_v = torch.stack(b_list, 0).mean(0)
+
+        # --- proprio branch --------------------------------------------------
+        if self.film_gamma_prop is not None:
+            gamma_p = self.film_gamma_prop[idx](p_obs).unsqueeze(-1)
+            beta_p = self.film_beta_prop[idx](p_obs).unsqueeze(-1)
+
+        gamma = torch.tanh(gamma_v + gamma_p)
+        beta = torch.tanh(beta_v + beta_p)
+
+        return self.act((1 + gamma) * h + beta)
+
+    # ------------------------------------------------------------------ #
+    def forward(self, x, t, Ot_list=None, p_obs=None):
+        """
+        x       : (B, 1, H, W)
+        t       : (B,)
+        Ot_list : list of (B, vis_dim) or None
+        p_obs   : (B, obs_dim) or None
+        """
+        emb = self.act(self.embed(t))  # (B, embed_dim)
+
+        # squeeze channel dim → (B, H, W)
+        x = x.squeeze(1)
+
+        # ---- Encoder -------------------------------------------------- #
+        h1 = self.act(self.gn1(self.conv1(x) + self.dense1(emb).squeeze(-1)))
+        h1 = self._apply_film(h1, 0, Ot_list, p_obs)
+
+        h2 = self.act(self.gn2(self.conv2(h1) + self.dense2(emb).squeeze(-1)))
+        h2 = self._apply_film(h2, 1, Ot_list, p_obs)
+
+        h3 = self.act(self.gn3(self.conv3(h2) + self.dense3(emb).squeeze(-1)))
+        h3 = self._apply_film(h3, 2, Ot_list, p_obs)
+
+        h4 = self.act(self.gn4(self.conv4(h3) + self.dense4(emb).squeeze(-1)))
+        h4 = self._apply_film(h4, 3, Ot_list, p_obs)
+
+        # ---- Decoder -------------------------------------------------- #
+        g4 = self.act(self.tgn4(self.tconv4(h4) + self.dense5(emb).squeeze(-1)))
+        g4 = self._apply_film(g4, 2, Ot_list, p_obs)
+
+        g3 = self.act(self.tgn3(self.tconv3(torch.cat([g4, h3], 1)) + self.dense6(emb).squeeze(-1)))
+        g3 = self._apply_film(g3, 1, Ot_list, p_obs)
+
+        g2 = self.act(self.tgn2(self.tconv2(torch.cat([g3, h2], 1)) + self.dense7(emb).squeeze(-1)))
+        g2 = self._apply_film(g2, 0, Ot_list, p_obs)
+
+        g1 = self.tconv1(torch.cat([g2, h1], 1))           # (B, H, W)
+
+        # unsqueeze channel back to (B,1,H,W)
+        g1 = g1.unsqueeze(1)
+
+        return g1 / self.marginal_prob_std(t)[:, None, None, None]

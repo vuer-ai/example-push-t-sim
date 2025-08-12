@@ -1,0 +1,64 @@
+<?xml version="1.0" ?>
+<mujoco>
+  <compiler angle="radian" autolimits="true"/>
+  <!--<statistic center="0.2 0 0.4" extent=".65"/>-->
+  <visual>
+    <headlight diffuse="0.6 0.6 0.6" ambient="0.3 0.3 0.3" specular="0 0 0"/>
+    <rgba haze="0.15 0.25 0.35 1"/>
+    <global azimuth="150" elevation="-20" offwidth="1280" offheight="1024"/>
+  </visual>
+  <asset>
+    <texture type="skybox" builtin="gradient" rgb1="0.9 0.7 0.9" rgb2="0.94 0.97 0.97" width="512" height="3072"/>
+    <texture type="2d" name="groundplane" builtin="checker" mark="edge" rgb1="0.2 0.3 0.4" rgb2="0.1 0.2 0.3" markrgb="0.8 0.8 0.8" width="300" height="300"/>
+    <material name="groundplane" texture="groundplane" texuniform="true" texrepeat="5 5" reflectance="0.2"/>
+    <material name="concrete-slab-concrete" rgba="0.8 0.8 0.8 1" shininess="0.5"/>
+    <material name="concrete-slab-imprint" rgba="0 0 0 1" shininess="0.1"/>
+    <material name="concrete-slab-target" rgba="0 1 0 1" shininess="0.1"/>
+    <material name="t-shape-mat" rgba="1.0 0.1 0.1 1" shininess="0.5"/>
+    <material name="cylinder-mat" rgba="0 0 1 1" shininess="0.1"/>
+  </asset>
+  <worldbody>
+    <light name="key" pos="1 0.69 1.15" dir="-1 -0.5 -0.5" cutoff="45" diffuse="0.3 0.3 0.3" directional="true"/>
+    <light name="fill" pos="0.8 -0.51 1.05" dir="-0.8 0.5 -0.6" cutoff="60" diffuse="0.18 0.18 0.18" directional="true"/>
+    <light name="back" pos="-0.8 0.19 1.85" dir="-1 0 1" cutoff="50" diffuse="0.5 0.5 0.5" directional="true"/>
+    <body name="concrete-slab" pos="0 0 0.6">
+      <geom name="concrete-slab-concrete" type="box" group="1" material="concrete-slab-concrete" size="0.4 0.4 0.05" pos="0 0 -0.05" friction="50.0 0.005 0.0001"/>
+      <!-- T-shaped imprint (vertical bar) -->
+      <geom name="concrete-slab-t-vert" type="box" group="1" material="concrete-slab-imprint" size="0.03 0.11 0.001" pos="0 0 0.005" contype="0" conaffinity="0" friction="5.0 0.005 0.0001"/>
+      <!-- T-shaped imprint (horizontal bar) -->
+      <geom name="concrete-slab-t-horiz" type="box" group="1" material="concrete-slab-imprint" size="0.11 0.03 0.001" pos="0 0.08 0.005" contype="0" conaffinity="0" friction="5.0 0.005 0.0001"/>
+      <geom name="concrete-slab-target" type="cylinder" group="1" material="concrete-slab-target" size="0.03 0.001" pos="0 -0.3 0.005" contype="0" conaffinity="0" friction="5.0 0.005 0.0001"/>
+    </body>
+    <body name="t-shape" pos="0 -0.09 0.6">
+      <!-- Vertical bar of T -->
+      <geom name="t-shape-vert" type="box" group="2" material="t-shape-mat" contype="1" conaffinity="1" size="0.02 0.10 0.02" pos="0 0 0.02" friction="50.0 0.005 0.0001" solref="0.005 0.01" solimp="0.95 0.99 0.001"/>
+      <!-- Horizontal bar of T -->
+      <geom name="t-shape-horiz" type="box" group="2" material="t-shape-mat" contype="1" conaffinity="1" size="0.10 0.02 0.02" pos="0 0.08 0.02" friction="50.0 0.005 0.0001" solref="0.005 0.01" solimp="0.95 0.99 0.001"/>
+      <joint name="t-shape-joint-slide_x" type="slide" axis="1 0 0" damping="10.0"/>
+      <joint name="t-shape-joint-slide_y" type="slide" axis="0 1 0" damping="10.0"/>
+      <joint name="t-shape-joint-hinge_z" type="hinge" axis="0 0 1" damping="0.5"/>
+      <inertial pos="0 0.055 0.02" mass="1.0" diaginertia="0.0075 0.0074 0.0001"/>
+      <site name="tee" pos="0.10 0.02 0.02" size="0.005" rgba="1 1 1 1"/>
+    </body>
+    <camera name="top" pos="-0.03300000000000003 0 0.925" xyaxes="0 -1 0 1 0 0" fovy="0.8" orthographic="true"/>
+    <camera name="left_l" pos="0.06699999999999995 0.46 0.625" fovy="77.55214222201174" xyaxes="-1.0 0.0 0.0 0.0 -0.3987261114144499 0.917070056253235"/>
+    <camera name="left" pos="-0.133 0.46 0.625" fovy="77.55214222201174" xyaxes="-1.0 0.0 0.0 0.0 -0.3987261114144499 0.917070056253235"/>
+    <camera name="right" pos="-0.133 -0.46 0.625" fovy="77.55214222201174" xyaxes="1.0 0.0 0.0 -0.0 0.3987261114144499 0.917070056253235"/>
+    <camera name="right_r" pos="0.06699999999999995 -0.46 0.625" fovy="77.55214222201174" xyaxes="1.0 0.0 0.0 -0.0 0.3987261114144499 0.917070056253235"/>
+    <camera name="front" pos="-0.45000000000000007 0 0.625" fovy="77.55214222201174" xyaxes="-0.0 -1.0 0.0 0.44721359549995787 0.0 0.894427190999916"/>
+    <camera name="back" pos="0.25 0 0.625" fovy="77.55214222201174" xyaxes="-0.0 1.0 0.0 -0.5547001962252289 -0.0 0.8320502943378437"/>
+    <body name="cylinder" pos="0 0.19 0.65">
+      <geom name="cylinder-geom" material="cylinder-mat" type="cylinder" group="2" contype="1" conaffinity="1" size="0.02 0.05" pos="0 0 0" friction="5.0 0.005 0.0001" solref="0.005 0.01" solimp="0.95 0.99 0.001"/>
+      <inertial pos="0 0 0.025" mass="0.5" diaginertia="0.001 0.001 0.001"/>
+      <joint name="cylinder-cylinder_x" type="slide" axis="1 0 0"/>
+      <joint name="cylinder-cylinder_y" type="slide" axis="0 1 0"/>
+      <site name="cylinder-site" pos="0 0 0.05" type="sphere" size="0.002"/>
+    </body>
+    <body mocap="true" name="cylinder-mocap" pos="0 0.19 0.66" quat="0 0 1 0">
+      <site name="cylinder-mocap-site" size="0.002" type="sphere" rgba="0.13 0.3 0.2 1"/>
+    </body>
+  </worldbody>
+  <equality>
+    <weld site1="cylinder-mocap-site" site2="cylinder-site"/>
+  </equality>
+</mujoco>
